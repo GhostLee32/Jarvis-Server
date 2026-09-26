@@ -130,7 +130,7 @@ async function processCommand(text) {
     });
     const data = await r.json();
     if (data.error) {
-      addLine('Asistente', '(Error: ' + data.error + ')');
+      addLine('Asistente', '(Error: ' + data.error + ' — ' + (data.detail || 'sin detalle') + ')');
     } else {
       addLine('Asistente', data.text);
       speaking = true;
