@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Jarvis</title>
+<style>
+  :root{
+    --bg:#0b0f14; --card:#121820; --accent:#4fd1ff; --text:#e6edf3; --dim:#8a9aa8;
+    box-sizing:border-box; padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
+  }
+  html{scroll-padding-top:env(safe-area-inset-top,0px); height:100%;}
+  body{
+    height:100%; margin:0; background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    display:flex; flex-direction:column; align-items:center; justify-content:center; padding:24px;
+  }
+  h1{font-size:1.1rem; font-weight:600; color:var(--dim); letter-spacing:.05em; text-transform:uppercase; margin-bottom:32px;}
+  .orb{
+    width:140px; height:140px; border-radius:50%;
+    background:radial-gradient(circle at 35% 30%, #7fe6ff, var(--accent) 60%, #0f6f8f);
+    box-shadow:0 0 40px rgba(79,209,255,.4);
+    display:flex; align-items:center; justify-content:center;
+    cursor:pointer; user-select:none; transition:transform .15s ease, box-shadow .15s ease; border:none;
+  }
+  .orb:active{transform:scale(.95);}
+  .orb.listening{animation:pulse 1.2s infinite ease-in-out;}
+  .orb.thinking{animation:spin 1.5s linear infinite; box-shadow:0 0 60px rgba(79,209,255,.7);}
+  @keyframes pulse{0%,100%{box-shadow:0 0 40px rgba(79,209,255,.4);}50%{box-shadow:0 0 70px rgba(79,209,255,.8);}}
+  @keyframes spin{0%{filter:hue-rotate(0deg);}100%{filter:hue-rotate(60deg);}}
+  .mic{width:44px;height:44px;fill:#04222c;}
+  .status{margin-top:20px; color:var(--dim); font-size:.95rem; min-height:1.4em; text-align:center; max-width:340px;}
+  .panel{margin-top:28px; width:100%; max-width:480px; background:var(--card); border-radius:14px; padding:18px 20px; max-height:40vh; overflow-y:auto;}
+  .line{margin-bottom:14px; line-height:1.5;}
+  .who{font-size:.75rem; text-transform:uppercase; letter-spacing:.05em; color:var(--accent); margin-bottom:2px;}
+  .who.you{color:var(--dim);}
+  .btnrow{display:flex; gap:10px; margin-top:14px;}
+  .btnrow button{border-radius:20px; font-size:.8rem; padding:8px 16px; cursor:pointer; background:none;}
+  #hfToggle{border:1px solid var(--accent); color:var(--accent);}
+  #clearBtn{border:1px solid #2a3540; color:var(--dim);}
+</style>
+</head>
+<body>
+  <h1>Jarvis</h1>
+  <button class="orb" id="orb" aria-label="Hablar">
+    <svg class="mic" viewBox="0 0 24 24"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-2.08A7 7 0 0 0 19 12h-2z"/></svg>
+  </button>
+  <div class="status" id="status">Toca el círculo y habla</div>
+  <div class="btnrow">
+    <button id="hfToggle">Activar manos libres</button>
+    <button id="clearBtn">Borrar memoria</button>
+  </div>
+  <div class="panel" id="panel"></div>
+
+<script>
+const orb = document.getElementById('orb');
+const statusEl = document.getElementById('status');
+const panel = document.getElementById('panel');
+const hfToggle = document.getElementById('hfToggle');
+const clearBtn = document.getElementById('clearBtn');
+
+let recognizing = false;
+let handsFreeOn = false;
+let awaitingCommand = false;
+let speaking = false;
+function levenshtein(a, b) {
+  const m = a.length, n = b.length;
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i-1] === b[j-1] ? dp[i-1][j-1] : 1 + Math.min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1]);
+    }
+  }
+  return dp[m][n];
+}
+
+function findWakeWord(text) {
+  const rawWords = text.split(/\s+/);
+  for (let i = 0; i < rawWords.length; i++) {
+    const norm = rawWords[i].toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z]/g, '');
+    if (norm.length < 3) continue;
+    if (levenshtein(norm, 'jarvis') <= 2) {
+      return { rest: rawWords.slice(i + 1).join(' ').trim() };
+    }
+  }
+  return null;
+}
+
+function addLine(who, text) {
+  const div = document.createElement('div');
+  div.className = 'line';
+  div.innerHTML = `<div class="who ${who==='Tú'?'you':''}">${who}</div><div>${text}</div>`;
+  panel.appendChild(div);
+  panel.scrollTop = panel.scrollHeight;
+}
+
+async function loadHistory() {
+  try {
+    const r = await fetch('/api/history');
+    const data = await r.json();
+    panel.innerHTML = '';
+    for (const m of (data.messages || [])) addLine(m.role === 'user' ? 'Tú' : 'Asistente', m.content);
+  } catch (e) {}
+}
+loadHistory();
+
+async function requestMicPermission() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    stream.getTracks().forEach(t => t.stop());
+    return true;
+  } catch (e) {
+    statusEl.textContent = 'Micrófono bloqueado (' + e.name + '). Revisa los permisos del sitio.';
+    return false;
+  }
+}
+
+async function processCommand(text) {
+  addLine('Tú', text);
+  statusEl.textContent = 'Pensando...';
+  orb.classList.remove('listening');
+  orb.classList.add('thinking');
+  try {
+    const r = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text })
+    });
+    const data = await r.json();
+    if (data.error) {
+      addLine('Asistente', '(Error: ' + data.error + ')');
+    } else {
+      addLine('Asistente', data.text);
+      speaking = true;
+      const u = new SpeechSynthesisUtterance(data.text);
+      u.lang = 'es-ES';
+      u.onend = () => { speaking = false; };
+      u.onerror = () => { speaking = false; };
+      window.speechSynthesis.speak(u);
+    }
+  } catch (e) {
+    addLine('Asistente', '(No pude conectar con el servidor)');
+  }
+  orb.classList.remove('thinking');
+  statusEl.textContent = handsFreeOn ? 'Di "Jarvis" para hablarme' : 'Toca el círculo y habla';
+}
+
+clearBtn.addEventListener('click', async () => {
+  panel.innerHTML = '';
+  try { await fetch('/api/clear', { method: 'POST' }); } catch(e) {}
+  statusEl.textContent = 'Memoria borrada. Toca el círculo y habla';
+});
+
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let recognition = null;
+
+if (!SR) {
+  statusEl.textContent = 'Tu navegador no soporta reconocimiento de voz. Prueba en Chrome.';
+  hfToggle.disabled = true;
+} else {
+  recognition = new SR();
+  recognition.lang = 'es-ES';
+  recognition.interimResults = false;
+  recognition.maxAlternatives = 1;
+
+  recognition.onstart = () => {
+    recognizing = true;
+    if (!handsFreeOn) { orb.classList.add('listening'); statusEl.textContent = 'Escuchando...'; }
+  };
+
+  recognition.onerror = (e) => {
+    recognizing = false;
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+      statusEl.textContent = 'Permiso de micrófono denegado. Actívalo en los ajustes del sitio.';
+      handsFreeOn = false;
+      hfToggle.textContent = 'Activar manos libres';
+      hfToggle.style.background = 'none';
+      hfToggle.style.color = 'var(--accent)';
+      orb.classList.remove('listening');
+      return;
+    }
+    if (!handsFreeOn) {
+      statusEl.textContent = 'Error: ' + e.error + '. Toca para reintentar.';
+      orb.classList.remove('listening');
+    }
+  };
+
+  recognition.onend = () => {
+    recognizing = false;
+    if (handsFreeOn && !speaking) {
+      try { recognition.start(); } catch(e) {}
+    } else if (!handsFreeOn) {
+      orb.classList.remove('listening');
+    }
+  };
+
+  recognition.onresult = (event) => {
+    const last = event.results[event.results.length - 1];
+    if (!last.isFinal) return;
+    const text = last[0].transcript.trim();
+    if (!text) return;
+
+    if (!handsFreeOn) { processCommand(text); return; }
+
+    const found = findWakeWord(text);
+    if (found) {
+      const rest = found.rest;
+      if (rest.length > 2) {
+        awaitingCommand = false;
+        orb.classList.remove('listening');
+        processCommand(rest);
+      } else {
+        awaitingCommand = true;
+        orb.classList.add('listening');
+        statusEl.textContent = 'Te escucho...';
+      }
+    } else if (awaitingCommand) {
+      awaitingCommand = false;
+      orb.classList.remove('listening');
+      processCommand(text);
+    }
+  };
+
+  orb.addEventListener('click', async () => {
+    if (handsFreeOn) return;
+    if (recognizing) { recognition.stop(); return; }
+    window.speechSynthesis.cancel();
+    const ok = await requestMicPermission();
+    if (!ok) return;
+    try { recognition.start(); } catch(e) {}
+  });
+
+  hfToggle.addEventListener('click', async () => {
+    if (!handsFreeOn) {
+      const ok = await requestMicPermission();
+      if (!ok) return;
+    }
+    handsFreeOn = !handsFreeOn;
+    if (handsFreeOn) {
+      hfToggle.textContent = 'Desactivar manos libres';
+      hfToggle.style.background = 'var(--accent)';
+      hfToggle.style.color = '#04222c';
+      statusEl.textContent = 'Di "Jarvis" para hablarme';
+      recognition.continuous = true;
+      if (!recognizing) { try { recognition.start(); } catch(e) {} }
+    } else {
+      hfToggle.textContent = 'Activar manos libres';
+      hfToggle.style.background = 'none';
+      hfToggle.style.color = 'var(--accent)';
+      orb.classList.remove('listening');
+      statusEl.textContent = 'Toca el círculo y habla';
+      recognition.continuous = false;
+      try { recognition.stop(); } catch(e) {}
+    }
+  });
+
+  setInterval(() => {
+    if (handsFreeOn && !speaking && !recognizing) {
+      try { recognition.start(); } catch(e) {}
+    }
+  }, 1200);
+}
+</script>
+</body>
+</html>
